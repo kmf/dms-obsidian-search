@@ -1,0 +1,15 @@
+{
+    "id": "obsidianSearch",
+    "name": "Obsidian Vault Search",
+    "description": "Search notes in your Obsidian vaults",
+    "version": "0.8.0",
+    "license": "MIT",
+    "author": "kmf",
+    "icon": "search",
+    "type": "launcher",
+    "component": "./ObsidianSearch.qml",
+    "settings": "./ObsidianSearchSettings.qml",
+    "requires_dms": ">=1.4.0",
+    "permissions": ["settings_read", "settings_write"],
+    "trigger": "\\note"
+}
