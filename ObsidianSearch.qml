@@ -67,7 +67,7 @@ QtObject {
         }
     }
 
-    // Build content index: extract words from all .md files
+    // Build content index: first 30 lines of each .md via awk (fast, single process)
     property Component contentIndexComponent: Component {
         Process {
             id: contentProcess
@@ -76,11 +76,12 @@ QtObject {
             property string vaultPath: ""
 
             running: false
-            // For each .md file, output "filepath:first 200 chars of content"
             command: ["sh", "-c",
                 "find '" + vaultPath + "' -type f -name '*.md' " +
                 "-not -path '*/.obsidian/*' -not -path '*/.trash/*' " +
-                "-exec sh -c 'for f; do printf \"%s\\t\" \"$f\"; head -c 500 \"$f\" | tr \"\\n\" \" \"; echo; done' _ {} +"]
+                "-print0 | xargs -0 awk " +
+                "'FNR==1{if(NR>1) print \"\"; printf \"%s\\t\", FILENAME} " +
+                "FNR<=30{printf \"%s \", $0} END{print \"\"}'"]
 
             stdout: StdioCollector {
                 onStreamFinished: {
@@ -92,6 +93,9 @@ QtObject {
             onExited: exitCode => {
                 if (exitCode !== 0) {
                     console.warn("[ObsidianSearch] content index failed, exit:", exitCode);
+                    root._pendingScans--;
+                    if (root._pendingScans <= 0)
+                        root.itemsChanged();
                     contentProcess.destroy();
                 }
             }
