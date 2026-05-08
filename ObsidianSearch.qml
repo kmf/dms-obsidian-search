@@ -45,7 +45,8 @@ QtObject {
             property string vaultPath: ""
 
             running: false
-            command: ["find", vaultPath, "-type", "f", "-name", "*.md",
+            command: ["find", vaultPath, "-type", "f",
+                      "(", "-name", "*.md", "-o", "-name", "*.pdf", "-o", "-name", "*.base", ")",
                       "-not", "-path", "*/.obsidian/*", "-not", "-path", "*/.trash/*"]
 
             stdout: StdioCollector {
@@ -77,7 +78,7 @@ QtObject {
 
             running: false
             command: ["sh", "-c",
-                "find '" + vaultPath + "' -type f -name '*.md' " +
+                "find '" + vaultPath + "' -type f \\( -name '*.md' -o -name '*.base' \\) " +
                 "-not -path '*/.obsidian/*' -not -path '*/.trash/*' " +
                 "-print0 | xargs -0 awk " +
                 "'FNR==1{if(NR>1) print \"\"; printf \"%s\\t\", FILENAME} " +
@@ -181,7 +182,11 @@ QtObject {
             if (fullPath.length === 0)
                 continue;
             let relative = fullPath.substring(vaultPath.length + 1);
-            let title = relative.split('/').pop().replace(/\.md$/, '');
+            let fileName = relative.split('/').pop();
+            let type = "md";
+            if (fileName.endsWith(".pdf")) type = "pdf";
+            else if (fileName.endsWith(".base")) type = "base";
+            let title = fileName.replace(/\.(md|pdf|base)$/, '');
             let folder = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : "";
             notes.push({
                 title: title,
@@ -189,7 +194,8 @@ QtObject {
                 relative: relative,
                 fullPath: fullPath,
                 vault: vaultName,
-                vaultPath: vaultPath
+                vaultPath: vaultPath,
+                type: type
             });
         }
         root.cachedNotes = root.cachedNotes.concat(notes);
@@ -249,9 +255,12 @@ QtObject {
         let comment = note.vault;
         if (note.folder)
             comment += " / " + note.folder;
+        let icon = "description";
+        if (note.type === "pdf") icon = "picture_as_pdf";
+        else if (note.type === "base") icon = "dataset";
         return {
             name: note.title,
-            icon: "description",
+            icon: icon,
             comment: comment,
             action: "open:" + note.vault + ":" + note.relative,
             _fullPath: note.fullPath
