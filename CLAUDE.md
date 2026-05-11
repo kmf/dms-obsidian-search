@@ -44,6 +44,8 @@ dms ipc plugins reload obsidianSearch
 
 Use conventional commits (e.g. `feat:`, `fix:`, `refactor:`). Mark breaking changes with `!` (e.g. `feat!:`) or a `BREAKING CHANGE:` footer.
 
+**Never commit without reviewing `README.md` first.** If a change affects features, requirements, usage, or settings, update the README in the same commit (or a preceding one). The README is the user-facing source of truth — out-of-date docs are treated as bugs here.
+
 ## Settings persistence
 
 Settings are stored by DMS via `pluginService.loadPluginData` / `savePluginData` with string keys matching `settingKey` in `ObsidianSearchSettings.qml`. The plugin ID is `"obsidianSearch"`.
