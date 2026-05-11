@@ -2,7 +2,7 @@
     "id": "obsidianSearch",
     "name": "Obsidian Vault Search",
     "description": "Search notes in your Obsidian vaults",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "license": "MIT",
     "author": "kmf",
     "icon": "search",

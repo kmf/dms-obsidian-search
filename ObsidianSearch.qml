@@ -15,9 +15,8 @@ QtObject {
     signal itemsChanged
 
     property string homeDir: Quickshell.env("HOME") || "/home"
-    property var cachedNotes: []
     property var vaultMap: ({})  // vault name -> vault path
-    property int _pendingScans: 0
+    property string dsearchUrl: "http://127.0.0.1:43654/search"
 
     // Read obsidian.json to discover vaults
     property var vaultProcess: Process {
@@ -33,73 +32,6 @@ QtObject {
         onExited: exitCode => {
             if (exitCode !== 0 && root.customVaultPath.length > 0)
                 root.parseVaults("");
-        }
-    }
-
-    // Index .md files in each vault
-    property Component scanComponent: Component {
-        Process {
-            id: scanProcess
-
-            property string vaultName: ""
-            property string vaultPath: ""
-
-            running: false
-            command: ["find", vaultPath, "-type", "f",
-                      "(", "-name", "*.md", "-o", "-name", "*.pdf", "-o", "-name", "*.base", "-o", "-name", "*.canvas", ")",
-                      "-not", "-path", "*/.obsidian/*", "-not", "-path", "*/.trash/*"]
-
-            stdout: StdioCollector {
-                onStreamFinished: {
-                    root.onScanFinished(scanProcess.vaultName, scanProcess.vaultPath, text);
-                    scanProcess.destroy();
-                }
-            }
-
-            onExited: exitCode => {
-                if (exitCode !== 0) {
-                    console.warn("[ObsidianSearch] find failed for", vaultPath, "exit:", exitCode);
-                    root._pendingScans--;
-                    if (root._pendingScans <= 0)
-                        root.itemsChanged();
-                    scanProcess.destroy();
-                }
-            }
-        }
-    }
-
-    // Build content index: first 30 lines of each .md via awk (fast, single process)
-    property Component contentIndexComponent: Component {
-        Process {
-            id: contentProcess
-
-            property string vaultName: ""
-            property string vaultPath: ""
-
-            running: false
-            command: ["sh", "-c",
-                "find '" + vaultPath + "' -type f \\( -name '*.md' -o -name '*.base' -o -name '*.canvas' \\) " +
-                "-not -path '*/.obsidian/*' -not -path '*/.trash/*' " +
-                "-print0 | xargs -0 awk " +
-                "'FNR==1{if(NR>1) print \"\"; printf \"%s\\t\", FILENAME} " +
-                "FNR<=30{printf \"%s \", $0} END{print \"\"}'"]
-
-            stdout: StdioCollector {
-                onStreamFinished: {
-                    root.onContentIndexFinished(contentProcess.vaultName, contentProcess.vaultPath, text);
-                    contentProcess.destroy();
-                }
-            }
-
-            onExited: exitCode => {
-                if (exitCode !== 0) {
-                    console.warn("[ObsidianSearch] content index failed, exit:", exitCode);
-                    root._pendingScans--;
-                    if (root._pendingScans <= 0)
-                        root.itemsChanged();
-                    contentProcess.destroy();
-                }
-            }
         }
     }
 
@@ -141,132 +73,112 @@ QtObject {
         }
 
         root.vaultMap = newMap;
-        root.scanAllVaults();
+        root.itemsChanged();
     }
 
-    function scanAllVaults() {
-        root.cachedNotes = [];
-        let names = Object.keys(root.vaultMap);
-        // We run both find (for the file list) and content index
-        root._pendingScans = names.length * 2;
-        if (names.length === 0) {
-            root.itemsChanged();
-            return;
+    // Synchronous localhost call to dsearch HTTP API.
+    // Sync XHR blocks JS, but localhost is sub-ms and DMS requires sync getItems.
+    function dsearchQuery(q, folder, limit) {
+        let params = "type=file&limit=" + limit + "&folder=" + encodeURIComponent(folder);
+        if (q.length === 0)
+            params = "q=*&sort=mtime&" + params;
+        else
+            params = "q=" + encodeURIComponent(q) + "&" + params;
+
+        let xhr = new XMLHttpRequest();
+        try {
+            xhr.open("GET", root.dsearchUrl + "?" + params, false);
+            xhr.send();
+            if (xhr.status === 200) {
+                let data = JSON.parse(xhr.responseText);
+                return data.hits || [];
+            }
+            console.warn("[ObsidianSearch] dsearch HTTP", xhr.status);
+        } catch (e) {
+            console.warn("[ObsidianSearch] dsearch unreachable:", e);
         }
-        for (let i = 0; i < names.length; i++) {
-            let name = names[i];
-            let path = root.vaultMap[name];
-
-            let findProc = scanComponent.createObject(root, {
-                vaultName: name,
-                vaultPath: path
-            });
-            findProc.running = true;
-
-            let contentProc = contentIndexComponent.createObject(root, {
-                vaultName: name,
-                vaultPath: path
-            });
-            contentProc.running = true;
-        }
-    }
-
-    // Map fullPath -> content snippet for searching
-    property var _contentIndex: ({})
-
-    function onScanFinished(vaultName, vaultPath, data) {
-        let lines = data.trim().split("\n");
-        let notes = [];
-        for (let i = 0; i < lines.length; i++) {
-            let fullPath = lines[i].trim();
-            if (fullPath.length === 0)
-                continue;
-            let relative = fullPath.substring(vaultPath.length + 1);
-            let fileName = relative.split('/').pop();
-            let type = "md";
-            if (fileName.endsWith(".pdf")) type = "pdf";
-            else if (fileName.endsWith(".base")) type = "base";
-            else if (fileName.endsWith(".canvas")) type = "canvas";
-            let title = fileName.replace(/\.(md|pdf|base|canvas)$/, '');
-            let folder = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : "";
-            notes.push({
-                title: title,
-                folder: folder,
-                relative: relative,
-                fullPath: fullPath,
-                vault: vaultName,
-                vaultPath: vaultPath,
-                type: type
-            });
-        }
-        root.cachedNotes = root.cachedNotes.concat(notes);
-        root._pendingScans--;
-        if (root._pendingScans <= 0)
-            root.itemsChanged();
-    }
-
-    function onContentIndexFinished(vaultName, vaultPath, data) {
-        let lines = data.split("\n");
-        let idx = root._contentIndex;
-        for (let i = 0; i < lines.length; i++) {
-            let line = lines[i];
-            let tabPos = line.indexOf("\t");
-            if (tabPos < 0)
-                continue;
-            let fullPath = line.substring(0, tabPos);
-            let content = line.substring(tabPos + 1).toLowerCase();
-            idx[fullPath] = content;
-        }
-        root._contentIndex = idx;
-        root._pendingScans--;
-        if (root._pendingScans <= 0)
-            root.itemsChanged();
+        return [];
     }
 
     function getItems(query) {
         if (!root.enabled)
             return [];
 
-        const q = query ? query.trim().toLowerCase() : "";
-        if (q === "")
-            return root.cachedNotes.slice(0, 50).map(noteToItem);
+        let names = Object.keys(root.vaultMap);
+        if (names.length === 0)
+            return [];
 
-        let results = [];
-        let contentResults = [];
+        const q = query ? query.trim() : "";
+        let perVault = Math.max(10, Math.ceil(50 / names.length));
+        let all = [];
 
-        for (let i = 0; i < root.cachedNotes.length; i++) {
-            let n = root.cachedNotes[i];
-            // Title/folder match — primary results
-            if (n.title.toLowerCase().includes(q) || n.folder.toLowerCase().includes(q)) {
-                results.push(noteToItem(n));
-            }
-            // Content match — secondary results
-            else if (q.length >= 3 && root._contentIndex[n.fullPath] &&
-                     root._contentIndex[n.fullPath].includes(q)) {
-                let item = noteToItem(n);
-                item.comment = "Content match - " + item.comment;
-                contentResults.push(item);
+        for (let i = 0; i < names.length; i++) {
+            let vname = names[i];
+            let vpath = root.vaultMap[vname];
+            let hits = dsearchQuery(q, vpath, perVault);
+            for (let j = 0; j < hits.length; j++) {
+                let fullPath = hits[j].id;
+                if (!fullPath || fullPath.indexOf(vpath + "/") !== 0)
+                    continue;
+                let relative = fullPath.substring(vpath.length + 1);
+                let fileName = relative.split('/').pop();
+                let dot = fileName.lastIndexOf('.');
+                let ext = dot >= 0 ? fileName.substring(dot + 1).toLowerCase() : "";
+                let title = dot >= 0 ? fileName.substring(0, dot) : fileName;
+                let folder = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : "";
+                all.push({
+                    title: title,
+                    folder: folder,
+                    relative: relative,
+                    fullPath: fullPath,
+                    vault: vname,
+                    ext: ext,
+                    score: hits[j].score || 0
+                });
             }
         }
 
-        return results.concat(contentResults).slice(0, 50);
+        if (names.length > 1 && q.length > 0)
+            all.sort((a, b) => b.score - a.score);
+
+        return all.slice(0, 50).map(noteToItem);
     }
 
     function noteToItem(note) {
         let comment = note.vault;
         if (note.folder)
             comment += " / " + note.folder;
-        let icon = "description";
-        if (note.type === "pdf") icon = "picture_as_pdf";
-        else if (note.type === "base") icon = "dataset";
-        else if (note.type === "canvas") icon = "schema";
         return {
             name: note.title,
-            icon: icon,
+            icon: iconForExt(note.ext),
             comment: comment,
             action: "open:" + note.vault + ":" + note.relative,
-            _fullPath: note.fullPath
+            _fullPath: note.fullPath,
+            _ext: note.ext
         };
+    }
+
+    function iconForExt(ext) {
+        switch (ext) {
+        case "md":     return "description";
+        case "pdf":    return "picture_as_pdf";
+        case "base":   return "dataset";
+        case "canvas": return "schema";
+        case "png": case "jpg": case "jpeg": case "gif": case "webp": case "svg": case "bmp":
+            return "image";
+        case "mp4": case "mov": case "webm": case "mkv": case "avi":
+            return "movie";
+        case "mp3": case "wav": case "ogg": case "flac": case "m4a":
+            return "music_note";
+        case "txt": case "log":
+            return "text_snippet";
+        case "json": case "yaml": case "yml": case "toml": case "xml":
+            return "data_object";
+        case "zip": case "tar": case "gz": case "7z":
+            return "folder_zip";
+        default:
+            return "description";
+        }
     }
 
     function executeItem(item) {
@@ -275,9 +187,17 @@ QtObject {
         let parts = item.action.replace("open:", "").split(":");
         let vaultName = parts[0];
         let filePath = parts.slice(1).join(":");
-        let fileNoExt = filePath.replace(/\.md$/, '');
-        let uri = "obsidian://open?vault=" + encodeURIComponent(vaultName) + "&file=" + encodeURIComponent(fileNoExt);
-        Quickshell.execDetached(["xdg-open", uri]);
+        let ext = (item._ext || "").toLowerCase();
+
+        // Files Obsidian opens natively go through the URI scheme; everything
+        // else opens with the system default app via the full filesystem path.
+        if (ext === "md" || ext === "canvas" || ext === "base" || ext === "pdf") {
+            let target = ext === "md" ? filePath.replace(/\.md$/, '') : filePath;
+            let uri = "obsidian://open?vault=" + encodeURIComponent(vaultName) + "&file=" + encodeURIComponent(target);
+            Quickshell.execDetached(["xdg-open", uri]);
+        } else {
+            Quickshell.execDetached(["xdg-open", item._fullPath]);
+        }
     }
 
     function getContextMenuActions(item) {
@@ -304,7 +224,6 @@ QtObject {
         ];
     }
 
-    // Settings management
     function updateSettings() {
         if (!root.pluginService)
             return;
@@ -317,11 +236,9 @@ QtObject {
         root.trigger = noTrigger ? "" : root.pluginService.loadPluginData("obsidianSearch", "trigger", "note");
 
         if (!root.enabled) {
-            root.cachedNotes = [];
-            root._contentIndex = {};
+            root.vaultMap = {};
             root.itemsChanged();
         } else {
-            root._contentIndex = {};
             root.refreshVaults();
         }
     }
@@ -340,13 +257,6 @@ QtObject {
         interval: 500
         running: true
         repeat: false
-        onTriggered: root.refreshVaults()
-    }
-
-    property var refreshTimer: Timer {
-        interval: 300000
-        running: root.enabled
-        repeat: true
         onTriggered: root.refreshVaults()
     }
 }
