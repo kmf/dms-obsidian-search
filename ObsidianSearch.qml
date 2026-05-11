@@ -46,7 +46,7 @@ QtObject {
 
             running: false
             command: ["find", vaultPath, "-type", "f",
-                      "(", "-name", "*.md", "-o", "-name", "*.pdf", "-o", "-name", "*.base", ")",
+                      "(", "-name", "*.md", "-o", "-name", "*.pdf", "-o", "-name", "*.base", "-o", "-name", "*.canvas", ")",
                       "-not", "-path", "*/.obsidian/*", "-not", "-path", "*/.trash/*"]
 
             stdout: StdioCollector {
@@ -78,7 +78,7 @@ QtObject {
 
             running: false
             command: ["sh", "-c",
-                "find '" + vaultPath + "' -type f \\( -name '*.md' -o -name '*.base' \\) " +
+                "find '" + vaultPath + "' -type f \\( -name '*.md' -o -name '*.base' -o -name '*.canvas' \\) " +
                 "-not -path '*/.obsidian/*' -not -path '*/.trash/*' " +
                 "-print0 | xargs -0 awk " +
                 "'FNR==1{if(NR>1) print \"\"; printf \"%s\\t\", FILENAME} " +
@@ -186,7 +186,8 @@ QtObject {
             let type = "md";
             if (fileName.endsWith(".pdf")) type = "pdf";
             else if (fileName.endsWith(".base")) type = "base";
-            let title = fileName.replace(/\.(md|pdf|base)$/, '');
+            else if (fileName.endsWith(".canvas")) type = "canvas";
+            let title = fileName.replace(/\.(md|pdf|base|canvas)$/, '');
             let folder = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : "";
             notes.push({
                 title: title,
@@ -258,6 +259,7 @@ QtObject {
         let icon = "description";
         if (note.type === "pdf") icon = "picture_as_pdf";
         else if (note.type === "base") icon = "dataset";
+        else if (note.type === "canvas") icon = "schema";
         return {
             name: note.title,
             icon: icon,
