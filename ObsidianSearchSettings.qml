@@ -43,11 +43,12 @@ PluginSettings {
         description: value ? "Notes always appear in the launcher." : "Use a trigger keyword to search notes."
         defaultValue: false
         onValueChanged: {
-            if (value) {
+            if (!isInitialized)
+                return;
+            if (value)
                 root.saveValue("trigger", "");
-            } else {
+            else
                 root.saveValue("trigger", triggerSetting.value || "note");
-            }
         }
     }
 
