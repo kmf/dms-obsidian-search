@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Common
 import qs.Services
 
 QtObject {
@@ -234,6 +235,7 @@ QtObject {
 
         let noTrigger = root.pluginService.loadPluginData("obsidianSearch", "noTrigger", false);
         root.trigger = noTrigger ? "" : root.pluginService.loadPluginData("obsidianSearch", "trigger", "note");
+        SettingsData.setPluginAllowWithoutTrigger("obsidianSearch", noTrigger);
 
         if (!root.enabled) {
             root.vaultMap = {};

@@ -37,7 +37,7 @@ Configure via DMS plugin settings:
 |---|---|---|
 | Vault Path | Manual vault path, or empty for auto-detect | empty |
 | Obsidian as Flatpak | Toggle for Flatpak installations | off |
-| Always Active | Show results without trigger keyword | off |
+| Always Active | When ON, notes appear in any launcher search. When OFF, notes only appear when you type the trigger keyword (syncs with DMS Plugin Visibility). | off |
 | Search Trigger | Keyword to activate search | `note` |
 
 ## Requirements

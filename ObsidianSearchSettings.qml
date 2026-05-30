@@ -40,7 +40,7 @@ PluginSettings {
         id: noTriggerToggle
         settingKey: "noTrigger"
         label: "Always Active (No Trigger)"
-        description: value ? "Notes always appear in the launcher." : "Use a trigger keyword to search notes."
+        description: value ? "Notes appear in any launcher search." : "Notes only appear when you type the trigger keyword."
         defaultValue: false
         onValueChanged: {
             if (!isInitialized)
@@ -49,6 +49,7 @@ PluginSettings {
                 root.saveValue("trigger", "");
             else
                 root.saveValue("trigger", triggerSetting.value || "note");
+            SettingsData.setPluginAllowWithoutTrigger(root.pluginId, value);
         }
     }
 
