@@ -39,6 +39,7 @@ dms ipc plugins reload obsidianSearch
 - **`SplitParser` loses data on large outputs.** `onRunningChanged` fires before all `onRead` callbacks complete. Always use `StdioCollector` + `onStreamFinished` for any remaining `Process` usage.
 - **`loadPluginData` treats `""` as falsy**, returning the default value. For the "always active" trigger (empty string), read the `noTrigger` boolean flag separately.
 - **File opening is extension-aware.** Obsidian's URI scheme opens `.md`/`.canvas`/`.base`/`.pdf` natively (stripping `.md` only). Other file types are opened with `xdg-open` on the full filesystem path.
+- **Consumer-level `onValueChanged` on `ToggleSetting` must guard `if (!isInitialized) return;`.** The toggle's `value` flips from `defaultValue` to the loaded value during initial `loadValue()`, firing the signal before `isInitialized` is set. Without the guard, any consumer side-effects (e.g. cross-saving a sibling key like `trigger`) run during load and cascade through `pluginDataChanged` → `reloadChildValues` before siblings finish initializing. Mirrors the pattern in `DankLauncherKeys`.
 
 ## Commits
 
