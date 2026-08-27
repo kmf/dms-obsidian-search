@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Common
 import qs.Services
 
@@ -18,15 +19,32 @@ QtObject {
     property string cliPath: ""
     property var vaultMap: ({})  // vault name -> vault path
 
-    property int searchGen: 0
     property bool haveCache: false
     property string cachedQuery: ""
     property var cachedItems: []
+    property string pendingQuery: ""
+    property string activeQuery: ""
+    property var remainingVaults: []
+    property var combinedHits: []
+    property string activeVault: ""
+    property int launchId: 0
+    property int stdoutId: 0
+    property int cliRetries: 0
+    property int lastExitCode: 0
+    property bool searchOutDone: false
+    property bool searchErrDone: false
+    property bool searchExitDone: false
+    property bool vaultsReady: false
+    property string statusKind: ""  // "", "not-running", "no-cli"
 
     function notifyChanged() {
         root.itemsChanged();
-        if (root.pluginService && typeof root.pluginService.requestLauncherUpdate === "function")
-            root.pluginService.requestLauncherUpdate("obsidianSearch");
+        try {
+            if (root.pluginService)
+                root.pluginService.requestLauncherUpdate("obsidianSearch");
+        } catch (e) {
+            console.warn("[ObsidianSearch] requestLauncherUpdate failed:", e);
+        }
     }
 
     // The Electron app at /usr/bin/obsidian hangs in non-TTY contexts. The CLI
@@ -57,9 +75,9 @@ QtObject {
             } else {
                 root.cliPath = "";
                 root.vaultMap = {};
-                root.haveCache = false;
+                root.vaultsReady = false;
                 console.warn("[ObsidianSearch] Obsidian CLI not found. Install the CLI (https://obsidian.md/help/cli), not the Electron app at /usr/bin/obsidian.");
-                root.notifyChanged();
+                root.setStatus("no-cli");
             }
         }, 0, 3000);
     }
@@ -70,6 +88,15 @@ QtObject {
             return;
         }
         Proc.runCommand("obsidianSearch.vaults", [root.cliPath, "vaults", "verbose"], (stdout, code) => {
+            root.vaultsReady = true;
+            if (code !== 0) {
+                root.parseVaults(stdout || "");
+                if (Object.keys(root.vaultMap).length === 0)
+                    root.setStatus("not-running");
+                return;
+            }
+            if (root.statusKind === "not-running" || root.statusKind === "no-cli")
+                root.statusKind = "";
             root.parseVaults(stdout || "");
         }, 0, 5000);
     }
@@ -83,7 +110,7 @@ QtObject {
         }
 
         let text = (rawData || "").trim();
-        if (text.length > 0 && text.indexOf("Error:") !== 0 && text.indexOf("The CLI is unable") !== 0) {
+        if (text.length > 0 && !root.isCliError(text)) {
             let lines = text.split("\n");
             for (let i = 0; i < lines.length; i++) {
                 let line = lines[i];
@@ -102,60 +129,174 @@ QtObject {
         root.notifyChanged();
     }
 
+    function statusItems() {
+        if (root.statusKind === "no-cli") {
+            return [{
+                name: "Obsidian CLI not found",
+                icon: "error_outline",
+                comment: "Enable Command line interface in Obsidian Settings → General, then reload this plugin.",
+                action: "launch-obsidian:",
+                categories: ["Obsidian"],
+                _preScored: 1000
+            }];
+        }
+        if (root.statusKind === "not-running") {
+            return [{
+                name: "Obsidian isn't running",
+                icon: "error_outline",
+                comment: "Search only works while the Obsidian app is open. Select to launch it.",
+                action: "launch-obsidian:",
+                categories: ["Obsidian"],
+                _preScored: 1000
+            }];
+        }
+        return [];
+    }
+
+    function setStatus(kind) {
+        root.statusKind = kind;
+        root.haveCache = false;
+        root.notifyChanged();
+    }
+
     function getItems(query) {
         if (!root.enabled)
             return [];
 
         const q = query ? query.trim() : "";
-        if (root.haveCache && q === root.cachedQuery)
+
+        if (root.statusKind && q === root.pendingQuery)
+            return root.statusItems();
+
+        if (root.haveCache && q === root.cachedQuery && !root.statusKind)
             return root.cachedItems;
 
-        root.startSearch(q);
+        const searchingThis = q === root.pendingQuery && (searchDebounce.running || searchProc.running);
+        if (!searchingThis) {
+            root.pendingQuery = q;
+            searchDebounce.restart();
+        }
+
+        if (root.statusKind)
+            return root.statusItems();
         return [];
     }
 
-    function startSearch(q) {
-        root.searchGen += 1;
-        const gen = root.searchGen;
-        const names = Object.keys(root.vaultMap);
-
-        if (!root.cliPath || names.length === 0) {
-            if (gen === root.searchGen) {
-                root.cachedQuery = q;
-                root.cachedItems = [];
-                root.haveCache = true;
-            }
+    function kickSearch() {
+        if (!root.cliPath) {
+            root.setStatus("no-cli");
+            return;
+        }
+        if (!root.vaultsReady)
+            return;
+        if (Object.keys(root.vaultMap).length === 0) {
+            root.setStatus("not-running");
             return;
         }
 
-        const perVault = Math.max(10, Math.ceil(50 / names.length));
-        let remaining = names.length;
-        let combined = [];
+        const q = root.pendingQuery;
+        if (searchProc.running && root.activeQuery === q)
+            return;
 
-        for (let i = 0; i < names.length; i++) {
-            const vname = names[i];
-            let cmd;
-            if (q.length === 0)
-                cmd = [root.cliPath, "vault=" + vname, "recents"];
-            else
-                cmd = [root.cliPath, "vault=" + vname, "search:context", "query=" + q, "limit=" + perVault, "format=json"];
-
-            Proc.runCommand("obsidianSearch.search." + vname, cmd, (stdout, code) => {
-                if (gen !== root.searchGen)
-                    return;
-                if (q.length === 0)
-                    combined = combined.concat(root.parseRecentsOutput(stdout, vname));
-                else
-                    combined = combined.concat(root.parseSearchOutput(stdout, vname));
-                remaining -= 1;
-                if (remaining <= 0)
-                    root.applyResults(gen, q, combined);
-            }, 150, 8000);
-        }
+        root.cliRetries = 0;
+        root.startVaultQueue(q);
     }
 
-    function applyResults(gen, q, hits) {
-        if (gen !== root.searchGen)
+    function startVaultQueue(q) {
+        root.activeQuery = q;
+        root.combinedHits = [];
+        root.remainingVaults = Object.keys(root.vaultMap);
+        root.runNextVault();
+    }
+
+    function runNextVault() {
+        if (root.activeQuery !== root.pendingQuery) {
+            root.startVaultQueue(root.pendingQuery);
+            return;
+        }
+
+        if (root.remainingVaults.length === 0) {
+            root.applyResults(root.activeQuery, root.combinedHits);
+            return;
+        }
+
+        let names = root.remainingVaults.slice();
+        let vname = names[0];
+        root.remainingVaults = names.slice(1);
+        root.activeVault = vname;
+
+        let perVault = Math.max(10, Math.ceil(50 / Math.max(1, Object.keys(root.vaultMap).length)));
+        let cmd;
+        if (root.activeQuery.length === 0)
+            cmd = [root.cliPath, "vault=" + vname, "recents"];
+        else
+            cmd = [root.cliPath, "vault=" + vname, "search", "query=" + root.activeQuery, "limit=" + perVault, "format=json"];
+
+        root.launchId += 1;
+        let id = root.launchId;
+        root.searchOutDone = false;
+        root.searchErrDone = false;
+        root.searchExitDone = false;
+        searchProc.running = false;
+        searchProc.command = cmd;
+        Qt.callLater(function () {
+            if (id !== root.launchId)
+                return;
+            root.stdoutId = id;
+            searchProc.running = true;
+        });
+    }
+
+    function finishSearchIo() {
+        if (!root.searchOutDone || !root.searchErrDone || !root.searchExitDone)
+            return;
+        if (root.stdoutId !== root.launchId)
+            return;
+        if (root.activeQuery !== root.pendingQuery)
+            return;
+
+        let out = "";
+        let err = "";
+        try {
+            out = searchProc.stdout.text || "";
+        } catch (e) {}
+        try {
+            err = searchProc.stderr.text || "";
+        } catch (e) {}
+        root.handleSearchOutput(out, err, root.lastExitCode);
+    }
+
+    function handleSearchOutput(out, err, code) {
+        let blob = ((out || "") + "\n" + (err || "")).trim();
+
+        if (root.isNotRunning(blob) || (code !== 0 && root.isCliError(blob))) {
+            console.warn("[ObsidianSearch] Obsidian isn't running:", blob.split("\n")[0] || ("exit " + code));
+            root.setStatus("not-running");
+            return;
+        }
+
+        if (code !== 0) {
+            console.warn("[ObsidianSearch] CLI error:", blob.split("\n")[0] || ("exit " + code));
+            if (root.cliRetries < 2) {
+                root.cliRetries += 1;
+                retryTimer.restart();
+                return;
+            }
+            root.setStatus("not-running");
+            return;
+        }
+
+        root.statusKind = "";
+        root.cliRetries = 0;
+        let hits = root.activeQuery.length === 0
+            ? root.parseRecentsOutput(out, root.activeVault)
+            : root.parseSearchOutput(out, root.activeVault);
+        root.combinedHits = root.combinedHits.concat(hits);
+        root.runNextVault();
+    }
+
+    function applyResults(q, hits) {
+        if (q !== root.pendingQuery)
             return;
         let items = [];
         let n = Math.min(50, hits.length);
@@ -167,36 +308,53 @@ QtObject {
         root.notifyChanged();
     }
 
+    function isNotRunning(text) {
+        let t = (text || "");
+        return t.indexOf("unable to find Obsidian") !== -1 || t.indexOf("Please make sure Obsidian is running") !== -1;
+    }
+
+    function isCliError(text) {
+        let t = (text || "").trim();
+        return t.indexOf("Error:") === 0 || t.indexOf("The CLI is unable") !== -1;
+    }
+
     function parseSearchOutput(text, vaultName) {
         let t = (text || "").trim();
-        if (!t || t.indexOf("No matches found") === 0 || t.indexOf("Error:") === 0 || t.indexOf("The CLI is unable") === 0)
+        if (!t || t.indexOf("No matches found") === 0)
             return [];
 
-        let data;
-        try {
-            data = JSON.parse(t);
-        } catch (e) {
-            console.warn("[ObsidianSearch] search JSON parse failed:", e);
-            return [];
+        let data = null;
+        if (t.charAt(0) === "[") {
+            try {
+                data = JSON.parse(t);
+            } catch (e) {
+                console.warn("[ObsidianSearch] search JSON parse failed:", e);
+                data = null;
+            }
         }
-        if (!Array.isArray(data))
-            return [];
+
+        let paths = [];
+        if (Array.isArray(data)) {
+            for (let j = 0; j < data.length; j++) {
+                let entry = data[j];
+                if (typeof entry === "string")
+                    paths.push(entry);
+                else if (entry && entry.file)
+                    paths.push(entry.file);
+            }
+        } else {
+            let lines = t.split("\n");
+            for (let j = 0; j < lines.length; j++) {
+                let line = lines[j].trim();
+                if (line.length > 0 && line.indexOf("Error:") !== 0)
+                    paths.push(line);
+            }
+        }
 
         let vpath = root.vaultMap[vaultName] || "";
         let hits = [];
-        for (let j = 0; j < data.length; j++) {
-            let entry = data[j];
-            let relative = "";
-            let snippet = "";
-            if (typeof entry === "string") {
-                relative = entry;
-            } else if (entry && entry.file) {
-                relative = entry.file;
-                let matches = entry.matches || [];
-                if (matches.length > 0 && matches[0] && matches[0].text)
-                    snippet = ("" + matches[0].text).trim();
-            }
-            let note = root.hitFromRelative(relative, vaultName, vpath, snippet);
+        for (let j = 0; j < paths.length; j++) {
+            let note = root.hitFromRelative(paths[j], vaultName, vpath, "");
             if (note)
                 hits.push(note);
         }
@@ -205,7 +363,7 @@ QtObject {
 
     function parseRecentsOutput(text, vaultName) {
         let t = (text || "").trim();
-        if (!t || t.indexOf("Error:") === 0 || t.indexOf("The CLI is unable") === 0)
+        if (!t)
             return [];
 
         let vpath = root.vaultMap[vaultName] || "";
@@ -257,7 +415,7 @@ QtObject {
             categories: ["Obsidian"],
             _fullPath: note.fullPath,
             _ext: note.ext,
-            _preScored: 900 - (idx || 0)
+            _preScored: 950 - (idx || 0)
         };
     }
 
@@ -287,6 +445,13 @@ QtObject {
     function executeItem(item) {
         if (!item || !item.action)
             return;
+        if (item.action === "launch-obsidian:") {
+            Quickshell.execDetached(["xdg-open", "obsidian://open"]);
+            launchWaitTimer.restart();
+            return;
+        }
+        if (item.action.indexOf("open:") !== 0)
+            return;
         let parts = item.action.replace("open:", "").split(":");
         let vaultName = parts[0];
         let filePath = parts.slice(1).join(":");
@@ -308,7 +473,7 @@ QtObject {
     }
 
     function getContextMenuActions(item) {
-        if (!item || !item.action)
+        if (!item || !item.action || item.action.indexOf("open:") !== 0)
             return [];
         return [
             {
@@ -345,12 +510,74 @@ QtObject {
 
         if (!root.enabled) {
             root.vaultMap = {};
+            root.vaultsReady = false;
             root.haveCache = false;
             root.cachedItems = [];
+            root.statusKind = "";
             root.notifyChanged();
         } else {
             root.resolveCli();
         }
+    }
+
+    property var searchProc: Process {
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (root.stdoutId !== root.launchId)
+                    return;
+                root.searchOutDone = true;
+                root.finishSearchIo();
+            }
+        }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (root.stdoutId !== root.launchId)
+                    return;
+                root.searchErrDone = true;
+                root.finishSearchIo();
+            }
+        }
+        onExited: code => {
+            if (root.stdoutId !== root.launchId)
+                return;
+            root.lastExitCode = code;
+            root.searchExitDone = true;
+            root.finishSearchIo();
+        }
+    }
+
+    property var searchDebounce: Timer {
+        interval: 80
+        repeat: false
+        onTriggered: root.kickSearch()
+    }
+
+    property var retryTimer: Timer {
+        interval: 400
+        repeat: false
+        onTriggered: {
+            if (root.pendingQuery === root.activeQuery)
+                root.startVaultQueue(root.pendingQuery);
+        }
+    }
+
+    property var launchWaitTimer: Timer {
+        interval: 2000
+        repeat: false
+        onTriggered: {
+            root.statusKind = "";
+            root.vaultsReady = false;
+            root.refreshVaults();
+            searchDebounce.restart();
+        }
+    }
+
+    property var startTimer: Timer {
+        interval: 500
+        running: true
+        repeat: false
+        onTriggered: root.updateSettings()
     }
 
     Component.onCompleted: root.updateSettings()
@@ -360,16 +587,6 @@ QtObject {
         function onPluginDataChanged(pluginId) {
             if (pluginId === "obsidianSearch")
                 root.updateSettings();
-        }
-    }
-
-    property var initTimer: Timer {
-        interval: 500
-        running: true
-        repeat: false
-        onTriggered: {
-            if (root.enabled)
-                root.resolveCli();
         }
     }
 }

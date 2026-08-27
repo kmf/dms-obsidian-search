@@ -15,6 +15,7 @@ danksearch / `dsearch` is no longer used or required.
 - Context menu: copy path, open containing folder
 - Always-active mode (skip the trigger keyword)
 - Native and Flatpak Obsidian — the CLI finds the running instance
+- Shows **Obsidian isn't running** when the app is closed; select it to launch Obsidian
 
 ## Requirements
 
@@ -71,7 +72,7 @@ Queries are passed through to Obsidian search:
 
 Select a result to open it. Right-click for **Copy path** and **Open folder**.
 
-Obsidian must be running. The CLI connects to the live app over a local socket.
+Obsidian must be running. The CLI only talks to a live app instance. If the app is closed, the launcher shows **Obsidian isn't running** — select that row to start it.
 
 ## Settings
 
@@ -86,6 +87,10 @@ Configure via DMS plugin settings:
 | Search Trigger | Keyword to activate search | `note` |
 
 ## Troubleshooting
+
+**Launcher says “Obsidian isn't running”**
+
+The CLI cannot search unless the Obsidian app is open. Select that result to launch Obsidian, wait a couple of seconds, and search again.
 
 **No results, or the plugin will not enable**
 
