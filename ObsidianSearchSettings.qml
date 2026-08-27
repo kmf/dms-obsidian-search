@@ -25,15 +25,15 @@ PluginSettings {
     StringSetting {
         settingKey: "vaultPath"
         label: "Vault Path"
-        description: "Manual vault path (e.g. /home/user/Documents/notes). Leave empty to auto-detect."
+        description: "Manual vault path (e.g. /home/user/Documents/notes). Leave empty to auto-detect from the CLI."
         defaultValue: ""
     }
 
-    ToggleSetting {
-        settingKey: "isFlatpak"
-        label: "Obsidian as Flatpak"
-        description: "Enable if Obsidian is installed via Flatpak"
-        defaultValue: false
+    StringSetting {
+        settingKey: "cliPath"
+        label: "Obsidian CLI Path"
+        description: "Path to the Obsidian CLI binary (typically ~/.local/bin/obsidian). Leave empty to auto-detect. Do not point this at the Electron app (/usr/bin/obsidian)."
+        defaultValue: ""
     }
 
     ToggleSetting {
